@@ -1,0 +1,45 @@
+pipeline {
+    agent any
+
+    environment {
+        LOCAL_VM_HOST = credentials('local-vm-host')  // Deployment VM IP or hostname
+    }
+
+    stages {
+        stage('Generate Timestamp') {
+            steps {
+                script {
+                    env.TIMESTAMP = sh(script: 'date +%F', returnStdout: true).trim()
+                }
+            }
+        }
+
+        stage('Remote Backup on Deployment VM') {
+            steps {
+                sshagent(['local-vm-ssh-key']) {
+                    sh """
+ssh -o StrictHostKeyChecking=no vagrant@${LOCAL_VM_HOST} << 'ENDSSH'
+set -e  # exit on error
+
+TIMESTAMP="${TIMESTAMP}"
+
+echo "Creating backup directory if not exists..."
+sudo mkdir -p /opt/jenkins-backups
+
+echo "Setting ownership to vagrant (or jenkins)..."
+sudo chown -R vagrant:vagrant /opt/jenkins-backups
+
+echo "Committing current petclinic container as backup image..."
+sudo docker commit petclinic petclinic-backup:\$TIMESTAMP
+
+echo "Saving the backup image to tar file..."
+sudo docker save petclinic-backup:\$TIMESTAMP -o /opt/jenkins-backups/petclinic-backup-\$TIMESTAMP.tar
+
+echo "Backup completed successfully."
+ENDSSH
+                    """
+                }
+            }
+        }
+    }
+}
