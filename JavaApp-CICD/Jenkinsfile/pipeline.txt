@@ -1,0 +1,83 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKER_HUB_USERNAME = 'nabin011011'
+        DOCKER_HUB_PASSWORD = credentials('docker-hub-credentials')  // Docker Hub secret text credential
+        LOCAL_VM_HOST = credentials('local-vm-host')  // IP of your deployment VM (e.g. 192.168.56.21)
+    }
+
+    stages {
+        stage('Checkout Code') {
+            steps {
+                git branch: 'staging', url: 'https://github.com/Nabin0819/Spring_Java_project.git'
+            }
+        }
+
+        stage('Build WAR Package') {
+            steps {
+                script {
+                    docker.image('maven:3.9.6-eclipse-temurin-17').inside {
+                        sh 'mvn clean package -P MySQL -DskipTests --file JavaApp-CICD/pom.xml'
+                    }
+                }
+            }
+        }
+
+        stage('Build, Login and Push Docker Image') {
+            steps {
+                script {
+                    def image = "${DOCKER_HUB_USERNAME}/git-petclinic"
+                    sh """
+                        echo "${DOCKER_HUB_PASSWORD}" | docker login -u "${DOCKER_HUB_USERNAME}" --password-stdin
+                        docker build -t ${image} JavaApp-CICD
+                        docker push ${image}
+                    """
+                }
+            }
+        }
+
+        stage('Deploy to Local VM') {
+            steps {
+                sshagent(['local-vm-ssh-key']) {
+                    sh """
+                    ssh -o StrictHostKeyChecking=no vagrant@${LOCAL_VM_HOST} << EOF
+                    # Install Docker if not present
+                    if ! command -v docker &> /dev/null; then
+                      sudo apt update
+                      sudo apt install -y docker.io
+                      sudo systemctl enable docker
+                      sudo systemctl start docker
+                    fi
+
+                    # Clean existing containers
+                    sudo docker stop petclinic || true
+                    sudo docker rm petclinic || true
+                    sudo docker stop mysql || true
+                    sudo docker rm mysql || true
+
+                    # Create Docker network if not exists
+                    sudo docker network inspect petclinic-net >/dev/null 2>&1 || \\
+                      sudo docker network create petclinic-net
+
+                    # Run MySQL container
+                    sudo docker run -d --name mysql --network petclinic-net \\
+                      -e MYSQL_ROOT_PASSWORD=root \\
+                      -e MYSQL_DATABASE=petclinic \\
+                      -e MYSQL_USER=petclinic \\
+                      -e MYSQL_PASSWORD=petclinic \\
+                      -p 3306:3306 mysql
+
+                    # Run Petclinic container
+                    sudo docker pull ${DOCKER_HUB_USERNAME}/git-petclinic
+                    sudo docker run -d --name petclinic --network petclinic-net \\
+                      -p 8080:8080 ${DOCKER_HUB_USERNAME}/git-petclinic
+
+                    exit
+                    EOF
+                    """
+                }
+            }
+        }
+    }
+}
